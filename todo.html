@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kanban Task Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.3/dist/confetti.browser.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .task {
+            cursor: grab;
+            transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+            /* Added position relative for absolute positioning of delete button */
+            position: relative;
+            padding-right: 2.5rem; /* Add padding to prevent text overlap with button */
+        }
+        .task:active {
+            cursor: grabbing;
+        }
+        .kanban-column {
+            min-height: 300px;
+            border-radius: 0.5rem;
+            transition: background-color 0.3s ease, border-color 0.3s ease;
+        }
+        .drag-over {
+            border: 2px dashed #3b82f6;
+            background-color: #1e3a8a;
+        }
+        #confetti-canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 9999;
+        }
+        /* Delete Button Styles */
+        .delete-task-btn {
+            position: absolute;
+            top: 0.5rem; /* Adjust as needed */
+            right: 0.5rem; /* Adjust as needed */
+            background-color: #ef4444; /* Red background */
+            color: white;
+            border: none;
+            border-radius: 50%; /* Circular */
+            width: 1.5rem; /* Size */
+            height: 1.5rem; /* Size */
+            font-size: 0.8rem; /* Smaller 'X' */
+            font-weight: bold;
+            line-height: 1.5rem; /* Center 'X' vertically */
+            text-align: center;
+            cursor: pointer;
+            transition: background-color 0.2s ease;
+            opacity: 0.8; /* Slightly transparent */
+        }
+        .delete-task-btn:hover {
+            background-color: #dc2626; /* Darker red on hover */
+            opacity: 1;
+        }
+        /* Utility class to hide elements */
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8 bg-gray-900 text-gray-100">
+
+    <div class="flex justify-between items-center mb-6 px-2">
+        <h1 class="text-3xl font-bold text-gray-100">My Kanban Board</h1>
+    </div>
+
+    <div class="mb-6 max-w-md mx-auto bg-gray-800 p-4 rounded-lg shadow">
+        <h2 class="text-xl font-semibold mb-3 text-gray-200">Add New Task</h2>
+        <input type="text" id="new-task-input" placeholder="Enter task description..." class="w-full p-2 border border-gray-600 rounded mb-2 focus:outline-none focus:ring-2 focus:ring-blue-400 bg-gray-700 text-gray-100 placeholder-gray-400">
+        <button id="add-task-btn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded transition duration-150 ease-in-out">
+            Add Task
+        </button>
+        <p id="error-message" class="text-red-400 text-sm mt-2 hidden">Please enter a task description.</p>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
+        <div id="todo-column" class="kanban-column p-4 shadow-md bg-gray-700">
+            <h2 class="text-lg font-semibold mb-4 text-center text-gray-200 border-b border-gray-600 pb-2">To Do</h2>
+            <div id="todo-tasks" class="space-y-3 min-h-[200px]"></div>
+        </div>
+        <div id="inprogress-column" class="kanban-column p-4 shadow-md bg-gray-700">
+            <h2 class="text-lg font-semibold mb-4 text-center text-gray-200 border-b border-gray-600 pb-2">In Progress</h2>
+            <div id="inprogress-tasks" class="space-y-3 min-h-[200px]"></div>
+        </div>
+        <div id="done-column" class="kanban-column p-4 shadow-md bg-gray-700">
+            <h2 class="text-lg font-semibold mb-4 text-center text-gray-200 border-b border-gray-600 pb-2">Done</h2>
+            <div id="done-tasks" class="space-y-3 min-h-[200px]"></div>
+        </div>
+    </div>
+
+    <canvas id="confetti-canvas"></canvas>
+
+    <script>
+        // --- DOM Elements ---
+        const newTaskInput = document.getElementById('new-task-input');
+        const addTaskBtn = document.getElementById('add-task-btn');
+        const errorMessage = document.getElementById('error-message');
+        const columns = document.querySelectorAll('.kanban-column');
+        const taskContainers = {
+            todo: document.getElementById('todo-tasks'),
+            inprogress: document.getElementById('inprogress-tasks'),
+            done: document.getElementById('done-tasks')
+        };
+        const confettiCanvas = document.getElementById('confetti-canvas');
+        const myConfetti = confetti.create(confettiCanvas, {
+            resize: true,
+            useWorker: true
+        });
+
+        // --- State ---
+        let draggedTask = null;
+
+        // --- Functions ---
+
+        /**
+         * Deletes a task element from the DOM and updates localStorage.
+         * @param {Event} event - The click event from the delete button.
+         */
+        function deleteTask(event) {
+            const taskElement = event.target.closest('.task'); // Find the parent task element
+            if (taskElement) {
+                taskElement.remove(); // Remove from the DOM
+                saveTasks(); // Update localStorage
+            }
+            // Prevent the click from triggering other events (like drag start)
+            event.stopPropagation();
+        }
+
+        /**
+         * Creates a new task element including a hidden delete button.
+         * @param {string} text - The text content of the task.
+         * @param {string} id - The unique ID for the task.
+         * @returns {HTMLElement} The created task element.
+         */
+        function createTaskElement(text, id) {
+            const task = document.createElement('div');
+            task.className = 'task bg-gray-800 p-3 rounded-md shadow text-gray-100 active:bg-gray-600 transition-colors duration-300 ease-in-out';
+            task.textContent = text;
+            task.setAttribute('draggable', 'true');
+            task.setAttribute('id', id);
+
+            // Create delete button
+            const deleteBtn = document.createElement('button');
+            deleteBtn.className = 'delete-task-btn hidden'; // Initially hidden
+            deleteBtn.innerHTML = '&times;'; // Use HTML entity for 'X'
+            deleteBtn.setAttribute('aria-label', 'Delete task'); // Accessibility
+            deleteBtn.addEventListener('click', deleteTask); // Add click listener
+
+            task.appendChild(deleteBtn); // Add button to task
+
+            task.addEventListener('dragstart', handleDragStart);
+            task.addEventListener('dragend', handleDragEnd);
+
+            return task;
+        }
+
+        /**
+         * Adds a new task to the 'To Do' column.
+         */
+        function addTask() {
+            const taskText = newTaskInput.value.trim();
+            if (taskText === '') {
+                errorMessage.classList.remove('hidden');
+                return;
+            }
+            errorMessage.classList.add('hidden');
+
+            const taskId = `task-${Date.now()}`;
+            const newTask = createTaskElement(taskText, taskId);
+            taskContainers.todo.appendChild(newTask);
+            newTaskInput.value = '';
+            saveTasks();
+        }
+
+        /**
+         * Saves the current state of tasks in all columns to localStorage.
+         */
+        function saveTasks() {
+            const tasksData = {
+                todo: [],
+                inprogress: [],
+                done: []
+            };
+            for (const columnId in taskContainers) {
+                const tasks = taskContainers[columnId].querySelectorAll('.task');
+                tasks.forEach(task => {
+                    // Get text content, excluding the delete button text if necessary
+                    // A simple way is to get the first text node's value
+                    const taskText = task.firstChild.nodeValue ? task.firstChild.nodeValue.trim() : '';
+                    tasksData[columnId].push({ id: task.id, text: taskText });
+                });
+            }
+            localStorage.setItem('kanbanTasks', JSON.stringify(tasksData));
+        }
+
+        /**
+         * Loads tasks from localStorage and populates the columns.
+         */
+        function loadTasks() {
+            const savedTasks = localStorage.getItem('kanbanTasks');
+            if (savedTasks) {
+                try {
+                    const tasksData = JSON.parse(savedTasks);
+                    Object.values(taskContainers).forEach(container => container.innerHTML = '');
+
+                    for (const columnId in tasksData) {
+                        if (tasksData.hasOwnProperty(columnId) && taskContainers[columnId]) {
+                             tasksData[columnId].forEach(taskData => {
+                                if (taskData && typeof taskData === 'object' && taskData.id && taskData.text) {
+                                    const taskElement = createTaskElement(taskData.text, taskData.id);
+                                    taskContainers[columnId].appendChild(taskElement);
+                                    // If task is loaded into 'Done', show delete button
+                                    if (columnId === 'done') {
+                                        const deleteBtn = taskElement.querySelector('.delete-task-btn');
+                                        if (deleteBtn) {
+                                            deleteBtn.classList.remove('hidden');
+                                        }
+                                    }
+                                } else {
+                                    console.warn("Skipping invalid task data:", taskData, "in column:", columnId);
+                                }
+                            });
+                        } else {
+                             console.warn("Skipping data for unknown or missing column:", columnId);
+                        }
+                    }
+                } catch (error) {
+                     console.error("Error parsing tasks from localStorage:", error);
+                }
+            }
+        }
+
+        /**
+         * Triggers the confetti animation.
+         */
+        function triggerConfetti() {
+            myConfetti({
+                particleCount: 150,
+                spread: 90,
+                origin: { y: 0.6 },
+                gravity: 0.8,
+                ticks: 300
+            });
+        }
+
+        // --- Event Handlers ---
+
+        function handleDragStart(event) {
+            // Prevent dragging if the click started on the delete button
+            if (event.target.classList.contains('delete-task-btn')) {
+                 event.preventDefault();
+                 return;
+            }
+            draggedTask = event.target;
+            setTimeout(() => {
+                if(draggedTask) {
+                    draggedTask.classList.add('opacity-50');
+                }
+            }, 0);
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('text/plain', event.target.id);
+        }
+
+        function handleDragEnd(event) {
+             if (event.target && event.target instanceof Element) {
+                event.target.classList.remove('opacity-50');
+            }
+            draggedTask = null;
+            columns.forEach(col => col.classList.remove('drag-over'));
+        }
+
+        function handleDragOver(event) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'move';
+            const targetColumn = event.target.closest('.kanban-column');
+            if (targetColumn) {
+                 if (!targetColumn.classList.contains('drag-over')) {
+                    columns.forEach(col => {
+                        if (col !== targetColumn) {
+                            col.classList.remove('drag-over');
+                        }
+                    });
+                    targetColumn.classList.add('drag-over');
+                 }
+            }
+        }
+
+        function handleDragLeave(event) {
+            const targetColumn = event.target.closest('.kanban-column');
+             if (targetColumn && !targetColumn.contains(event.relatedTarget)) {
+                 targetColumn.classList.remove('drag-over');
+             }
+             if (!event.relatedTarget && targetColumn) {
+                  targetColumn.classList.remove('drag-over');
+             }
+        }
+
+        function handleDrop(event) {
+            event.preventDefault();
+            const targetColumn = event.target.closest('.kanban-column');
+            const container = targetColumn ? targetColumn.querySelector('.space-y-3') : null;
+
+            if (container && draggedTask) {
+                const wasInDone = draggedTask.closest('#done-tasks');
+                const deleteBtn = draggedTask.querySelector('.delete-task-btn'); // Get delete button
+
+                container.appendChild(draggedTask); // Move the task element
+
+                const isNowInDone = targetColumn.id === 'done-column';
+
+                // Show/hide delete button based on column
+                if (deleteBtn) {
+                    if (isNowInDone) {
+                        deleteBtn.classList.remove('hidden');
+                    } else {
+                        deleteBtn.classList.add('hidden');
+                    }
+                }
+
+                // Trigger confetti only when moving *into* Done
+                if (isNowInDone && !wasInDone) {
+                    triggerConfetti();
+                }
+                saveTasks(); // Save the new state
+            } else if (!draggedTask) {
+                console.warn('Drop event occurred but draggedTask is null.');
+            }
+             columns.forEach(col => col.classList.remove('drag-over'));
+        }
+
+        // --- Event Listeners ---
+        addTaskBtn.addEventListener('click', addTask);
+        newTaskInput.addEventListener('keypress', (event) => {
+            if (event.key === 'Enter') {
+                addTask();
+            }
+        });
+        columns.forEach(column => {
+            column.addEventListener('dragover', handleDragOver);
+            column.addEventListener('dragleave', handleDragLeave);
+            column.addEventListener('drop', handleDrop);
+        });
+
+        // --- Initialization ---
+        document.addEventListener('DOMContentLoaded', () => {
+            loadTasks();
+        });
+
+    </script>
+
+</body>
+</html>
